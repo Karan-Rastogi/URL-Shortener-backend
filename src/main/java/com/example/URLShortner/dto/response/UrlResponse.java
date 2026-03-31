@@ -1,0 +1,24 @@
+package com.example.URLShortner.dto.response;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.LocalDateTime;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class UrlResponse {
+
+    private String shortCode;
+    private String shortUrl;        // full URL e.g. http://localhost:8080/aB3xZ9
+    private String longUrl;
+    private Long clickCount;
+    private LocalDateTime createdAt;
+    private LocalDateTime expiresAt;
+    private Boolean isActive;
+    private String customAlias;
+}
