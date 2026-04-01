@@ -11,6 +11,7 @@ import com.example.URLShortner.util.Base62Encoder;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -24,6 +25,10 @@ public class UrlServiceImpl implements UrlService {
     private final UrlRepository urlRepository;
     private final UserRepository userRepository;
     private final Base62Encoder base62Encoder;
+    private final RedisTemplate<String, String> redisTemplate;
+
+    @Value("${app.cache.url-ttl-seconds}")
+    private long urlTtlSeconds;
 
     @Value("${app.base-url}")
     private String baseUrl;
@@ -84,18 +89,37 @@ public class UrlServiceImpl implements UrlService {
     @Transactional
     public String getOriginalUrl(String shortCode) {
 
+        // 1. Check Redis cache first
+        String cacheKey = "url:" + shortCode;
+        String cachedUrl = redisTemplate.opsForValue().get(cacheKey);
+
+        if (cachedUrl != null) {
+            // Cache HIT — return instantly, MySQL never touched
+            urlRepository.incrementClickCount(shortCode);
+            return cachedUrl;
+        }
+
+        // 2. Cache MISS — query MySQL
         Url url = urlRepository
                 .findByShortCodeAndIsActiveTrue(shortCode)
                 .orElseThrow(() ->
                         new RuntimeException("Short URL not found"));
 
-        // Check expiry
+        // 3. Check expiry
         if (url.getExpireAt() != null &&
                 url.getExpireAt().isBefore(LocalDateTime.now())) {
             throw new RuntimeException("Short URL has expired");
         }
 
-        // Increment click count
+        // 4. Store in Redis for next time
+        redisTemplate.opsForValue().set(
+                cacheKey,
+                url.getLongUrl(),
+                urlTtlSeconds,
+                java.util.concurrent.TimeUnit.SECONDS
+        );
+
+        // 5. Increment click count
         urlRepository.incrementClickCount(shortCode);
 
         return url.getLongUrl();
@@ -124,15 +148,17 @@ public class UrlServiceImpl implements UrlService {
                 .orElseThrow(() ->
                         new RuntimeException("URL not found"));
 
-        // Make sure this URL belongs to the requesting user
         if (url.getUser() == null ||
                 !url.getUser().getEmail().equals(userEmail)) {
             throw new RuntimeException("Not authorized to delete this URL");
         }
 
-        // Soft delete — set isActive to false
+        // Soft delete
         url.setIsActive(false);
         urlRepository.save(url);
+
+        // Evict from Redis cache
+        redisTemplate.delete("url:" + shortCode);
     }
 
     // Helper — converts Url entity to UrlResponse DTO
